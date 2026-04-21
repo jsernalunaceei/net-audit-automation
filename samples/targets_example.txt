@@ -1,0 +1,3 @@
+# Example targets for lab validation
+127.0.0.1
+scanme.nmap.org

@@ -1,0 +1,11 @@
+project_name: "net-audit-automation"
+output_dir: "output"
+log_level: "INFO"
+
+scan:
+  top_ports: 1000
+  timing_template: 3
+  resolve_dns: true
+  service_detection: true
+  ping_discovery: true
+  nmap_path: "nmap"
