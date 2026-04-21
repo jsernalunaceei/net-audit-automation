@@ -10,6 +10,7 @@ from auditool.exceptions import NmapExecutionError
 def build_nmap_command(
     targets: list[str],
     xml_output: Path,
+    normal_output: Path,
     scan_config: dict[str, Any]
 ) -> list[str]:
     """
@@ -35,7 +36,9 @@ def build_nmap_command(
 
     command.extend(["--top-ports", str(top_ports)])
     command.extend(["-T", str(timing_template)])
+
     command.extend(["-oX", str(xml_output)])
+    command.extend(["-oN", str(normal_output)])
 
     command.extend(targets)
 
