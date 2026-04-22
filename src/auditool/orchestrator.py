@@ -19,39 +19,199 @@ def write_text_file(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def generate_summary(scan_txt: Path, output_summary: Path) -> None:
+def extract_host_blocks(nmap_text: str) -> list[list[str]]:
     """
-    Generate a simplified technical summary from Nmap normal output.
-
-    The goal is to keep only the most useful host-level information
-    for later use in report drafting or LLM-assisted analysis.
+    Split Nmap normal output into blocks, one per host.
+    Each block starts with 'Nmap scan report for ...'
     """
-    content = scan_txt.read_text(encoding="utf-8", errors="ignore")
-    lines = content.splitlines()
-
-    summary_lines: list[str] = []
-    current_host = None
+    lines = nmap_text.splitlines()
+    blocks: list[list[str]] = []
+    current_block: list[str] = []
 
     for line in lines:
+        if line.startswith("Nmap scan report for"):
+            if current_block:
+                blocks.append(current_block)
+            current_block = [line]
+        else:
+            if current_block:
+                current_block.append(line)
+
+    if current_block:
+        blocks.append(current_block)
+
+    return blocks
+
+
+def get_host_header(block: list[str]) -> str:
+    """
+    Return the host header line from a host block.
+    """
+    if not block:
+        return "UNKNOWN HOST"
+    return block[0].strip()
+
+
+def extract_relevant_scan_lines(block: list[str]) -> list[str]:
+    """
+    Extract factual, non-interpretive lines from a normal Nmap host block.
+    """
+    extracted: list[str] = []
+    capture_ports = False
+
+    for raw_line in block[1:]:
+        line = raw_line.rstrip()
+
         stripped = line.strip()
 
-        if stripped.startswith("Nmap scan report for"):
-            current_host = stripped
-            summary_lines.append("")
-            summary_lines.append(stripped)
-
-        elif stripped.startswith("PORT"):
-            if current_host:
-                summary_lines.append(stripped)
-
-        elif stripped.startswith("Not shown"):
+        if not stripped:
             continue
 
-        elif stripped and current_host:
-            if "/tcp" in stripped and "open" in stripped:
-                summary_lines.append(stripped)
+        if stripped.startswith("Host is up"):
+            extracted.append(stripped)
+            continue
 
-    output_summary.write_text("\n".join(summary_lines).strip() + "\n", encoding="utf-8")
+        if stripped.startswith("Other addresses for"):
+            extracted.append(stripped)
+            continue
+
+        if stripped.startswith("MAC Address:"):
+            extracted.append(stripped)
+            continue
+
+        if stripped.startswith("Device type:"):
+            extracted.append(stripped)
+            continue
+
+        if stripped.startswith("Running:"):
+            extracted.append(stripped)
+            continue
+
+        if stripped.startswith("OS details:"):
+            extracted.append(stripped)
+            continue
+
+        if stripped.startswith("Service Info:"):
+            extracted.append(stripped)
+            continue
+
+        if stripped.startswith("PORT"):
+            capture_ports = True
+            extracted.append(stripped)
+            continue
+
+        if capture_ports:
+            if stripped.startswith("Service detection performed"):
+                capture_ports = False
+                continue
+
+            if stripped.startswith("Nmap done:"):
+                capture_ports = False
+                continue
+
+            if stripped.startswith("Not shown:"):
+                continue
+
+            if "/tcp" in stripped or "/udp" in stripped:
+                extracted.append(stripped)
+                continue
+
+    return extracted
+
+
+def extract_relevant_vuln_lines(block: list[str]) -> list[str]:
+    """
+    Extract factual lines from an NSE vulnerability block for one host.
+    No interpretation is added.
+    """
+    extracted: list[str] = []
+
+    for raw_line in block[1:]:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            continue
+
+        if stripped.startswith("Host is up"):
+            continue
+
+        if stripped.startswith("Not shown:"):
+            continue
+
+        if stripped.startswith("PORT"):
+            extracted.append(stripped)
+            continue
+
+        if "/tcp" in stripped or "/udp" in stripped:
+            extracted.append(stripped)
+            continue
+
+        if stripped.startswith("|") or stripped.startswith("|_"):
+            extracted.append(stripped)
+            continue
+
+        if stripped.startswith("Service Info:"):
+            extracted.append(stripped)
+            continue
+
+    return extracted
+
+
+def build_summary_text(scan_txt: Path, vuln_txt: Path) -> str:
+    """
+    Build a factual technical summary using scan.txt and vuln.txt.
+    It groups facts by host and includes raw NSE findings where available.
+    """
+    scan_content = scan_txt.read_text(encoding="utf-8", errors="ignore")
+    vuln_content = vuln_txt.read_text(encoding="utf-8", errors="ignore")
+
+    scan_blocks = extract_host_blocks(scan_content)
+    vuln_blocks = extract_host_blocks(vuln_content)
+
+    vuln_map: dict[str, list[str]] = {}
+    for block in vuln_blocks:
+        header = get_host_header(block)
+        vuln_map[header] = extract_relevant_vuln_lines(block)
+
+    output_lines: list[str] = []
+    output_lines.append("TECHNICAL SUMMARY")
+    output_lines.append("=================")
+
+    for scan_block in scan_blocks:
+        header = get_host_header(scan_block)
+        scan_lines = extract_relevant_scan_lines(scan_block)
+        vuln_lines = vuln_map.get(header, [])
+
+        output_lines.append("")
+        output_lines.append(header)
+        output_lines.append("-" * len(header))
+
+        if scan_lines:
+            output_lines.append("NORMAL SCAN")
+            output_lines.extend(scan_lines)
+        else:
+            output_lines.append("NORMAL SCAN")
+            output_lines.append("No relevant lines extracted.")
+
+        output_lines.append("")
+        output_lines.append("NSE VULNERABILITY OUTPUT")
+
+        if vuln_lines:
+            output_lines.extend(vuln_lines)
+        else:
+            output_lines.append("No NSE output captured for this host.")
+
+    output_lines.append("")
+    return "\n".join(output_lines)
+
+
+def generate_summary(scan_txt: Path, vuln_txt: Path, output_summary: Path) -> None:
+    """
+    Generate a factual technical summary from Nmap normal output and NSE output.
+    """
+    summary_text = build_summary_text(scan_txt, vuln_txt)
+    output_summary.write_text(summary_text, encoding="utf-8")
 
 
 def run_scan_workflow(
@@ -209,7 +369,7 @@ def run_scan_workflow(
     # ===============================
     # GENERATE SUMMARY
     # ===============================
-    generate_summary(normal_output, summary_output)
+    generate_summary(normal_output, vuln_output, summary_output)
     logger.info("Summary saved to: %s", summary_output)
 
     return output_dir
